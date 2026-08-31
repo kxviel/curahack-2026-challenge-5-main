@@ -1,0 +1,23 @@
+[project]
+name = "curahack-2026-challenge-5-main"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Kevin D Goveas", email = "kevdanngovead@gmail.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "biom-format>=2.1.17",
+    "catboost>=1.2.10",
+    "numpy>=2.5.2",
+    "pandas>=3.0.5",
+    "pycaret==4.0.0a8",
+]
+
+[project.scripts]
+curahack-2026-challenge-5-main = "curahack_2026_challenge_5_main:main"
+
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13.0"]
+build-backend = "uv_build"

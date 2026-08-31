@@ -20,6 +20,7 @@ Requirements: pip install pandas numpy biom-format h5py scipy openpyxl
 """
 
 import os
+
 import numpy as np
 import pandas as pd
 from biom import load_table
@@ -41,28 +42,55 @@ OTU_PREVALENCE_THRESHOLD = 0.10
 # Grouped by category for clarity.
 
 GGMP_HEART_STROKE_COLS = [
-    "heart_bypass_surgery", "heart_stent_surgery", "heart_angina_pectoris",
-    "heart_aspirin", "heart_statins", "stroke_ischemic", "stroke_hemorrhagic",
+    "heart_bypass_surgery",
+    "heart_stent_surgery",
+    "heart_angina_pectoris",
+    "heart_aspirin",
+    "heart_statins",
+    "stroke_ischemic",
+    "stroke_hemorrhagic",
 ]
 GGMP_RESPIRATORY_COLS = ["copd", "asthma"]
 GGMP_GENERAL_DISEASE_COLS = [
-    "osteoarticular_disease", "waist_neck_disease",
-    "digestive_system_disease", "urinary_system_disease",
+    "osteoarticular_disease",
+    "waist_neck_disease",
+    "digestive_system_disease",
+    "urinary_system_disease",
     # malignant_tumor_disease handled separately (coded 'a' = absent)
 ]
 GGMP_SPECIFIC_DISEASE_COLS = [
-    "dis_T1DM", "dis_T2DM", "dis_fatty_liver", "dis_psoriasis",
-    "dis_AD", "dis_PD", "dis_ASD", "dis_MS",
-    "dis_atherosclerosis", "dis_LE", "dis_ARDS", "dis_gastritis",
-    "dis_hepatic_calculus", "dis_cholecystitis", "dis_colitis", "dis_IBS",
-    "dis_kidneyStone", "dis_gout", "dis_AS", "dis_RA",
-    "dis_neurosis", "dis_CFS", "dis_constipation_symptom", "dis_diarrhea_symptom",
+    "dis_T1DM",
+    "dis_T2DM",
+    "dis_fatty_liver",
+    "dis_psoriasis",
+    "dis_AD",
+    "dis_PD",
+    "dis_ASD",
+    "dis_MS",
+    "dis_atherosclerosis",
+    "dis_LE",
+    "dis_ARDS",
+    "dis_gastritis",
+    "dis_hepatic_calculus",
+    "dis_cholecystitis",
+    "dis_colitis",
+    "dis_IBS",
+    "dis_kidneyStone",
+    "dis_gout",
+    "dis_AS",
+    "dis_RA",
+    "dis_neurosis",
+    "dis_CFS",
+    "dis_constipation_symptom",
+    "dis_diarrhea_symptom",
 ]
 # All binary (y/n) disease columns combined
 GGMP_ALL_YN_DISEASE_COLS = (
-    GGMP_HEART_STROKE_COLS + GGMP_RESPIRATORY_COLS +
-    GGMP_GENERAL_DISEASE_COLS + GGMP_SPECIFIC_DISEASE_COLS +
-    ["MetS"]  # Metabolic syndrome
+    GGMP_HEART_STROKE_COLS
+    + GGMP_RESPIRATORY_COLS
+    + GGMP_GENERAL_DISEASE_COLS
+    + GGMP_SPECIFIC_DISEASE_COLS
+    + ["MetS"]  # Metabolic syndrome
 )
 
 # GGMP BIOM sample ID format: "11757.{SampleID}.56280"
@@ -71,6 +99,7 @@ GGMP_BIOM_SUFFIX = ".56280"
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
+
 
 def biom_to_filtered_dataframe(biom_path, sample_ids, prevalence_threshold):
     """
@@ -89,8 +118,10 @@ def biom_to_filtered_dataframe(biom_path, sample_ids, prevalence_threshold):
     if n_missing > 0:
         print(f"  NOTE: {n_missing} sample IDs not found in BIOM")
     biom_table = biom_table.filter(common_ids, axis="sample", inplace=False)
-    print(f"  After sample filter: {biom_table.shape[0]:,} OTUs x "
-          f"{biom_table.shape[1]:,} samples")
+    print(
+        f"  After sample filter: {biom_table.shape[0]:,} OTUs x "
+        f"{biom_table.shape[1]:,} samples"
+    )
 
     # OTU prevalence on sparse matrix (observations x samples)
     sparse_mat = biom_table.matrix_data
@@ -102,8 +133,10 @@ def biom_to_filtered_dataframe(biom_path, sample_ids, prevalence_threshold):
     keep_mask = prevalence >= prevalence_threshold
     keep_otu_ids = biom_table.ids(axis="observation")[keep_mask]
     biom_table = biom_table.filter(keep_otu_ids, axis="observation", inplace=False)
-    print(f"  After OTU prevalence filter (>= {prevalence_threshold*100:.0f}%): "
-          f"{biom_table.shape[0]:,} OTUs x {biom_table.shape[1]:,} samples")
+    print(
+        f"  After OTU prevalence filter (>= {prevalence_threshold * 100:.0f}%): "
+        f"{biom_table.shape[0]:,} OTUs x {biom_table.shape[1]:,} samples"
+    )
 
     # Convert to dense DataFrame
     otu_df = pd.DataFrame(
@@ -125,19 +158,28 @@ def print_cohort_stats(meta_df, label, paper_total, paper_healthy, paper_nonheal
 
     print(f"\n  {label} Cohort Summary:")
     print(f"    Total samples:  {n_total:>6,}  (paper: {paper_total:,})")
-    print(f"    Healthy:        {n_h:>6,}  (paper: {paper_healthy:,})"
-          f"  [{100*n_h/max(n_total,1):.1f}%]")
-    print(f"    Non-healthy:    {n_nh:>6,}  (paper: {paper_nonhealthy:,})"
-          f"  [{100*n_nh/max(n_total,1):.1f}%]")
+    print(
+        f"    Healthy:        {n_h:>6,}  (paper: {paper_healthy:,})"
+        f"  [{100 * n_h / max(n_total, 1):.1f}%]"
+    )
+    print(
+        f"    Non-healthy:    {n_nh:>6,}  (paper: {paper_nonhealthy:,})"
+        f"  [{100 * n_nh / max(n_total, 1):.1f}%]"
+    )
     if len(age_h) > 0:
-        print(f"    Healthy mean age:     {age_h.mean():.2f} +/- {age_h.std():.2f}"
-              f"  (paper: {label == 'GGMP' and '45.97 +/- 16.38' or '45.43 +/- 14.91'})")
+        print(
+            f"    Healthy mean age:     {age_h.mean():.2f} +/- {age_h.std():.2f}"
+            f"  (paper: {label == 'GGMP' and '45.97 +/- 16.38' or '45.43 +/- 14.91'})"
+        )
     if len(age_nh) > 0:
-        print(f"    Non-healthy mean age: {age_nh.mean():.2f} +/- {age_nh.std():.2f}"
-              f"  (paper: {label == 'GGMP' and '54.05 +/- 14.01' or '49.57 +/- 14.15'})")
+        print(
+            f"    Non-healthy mean age: {age_nh.mean():.2f} +/- {age_nh.std():.2f}"
+            f"  (paper: {label == 'GGMP' and '54.05 +/- 14.01' or '49.57 +/- 14.15'})"
+        )
 
 
 # ─── GGMP Processing ─────────────────────────────────────────────────────────
+
 
 def process_ggmp():
     """
@@ -183,7 +225,14 @@ def process_ggmp():
     has_tumor_info = meta_df["malignant_tumor_disease"].notna()
     has_disease_info = meta_df[available_yn].isin(["y", "n"]).all(axis=1)
 
-    complete = has_age & has_bmi & has_fbg & has_antibiotics & has_tumor_info & has_disease_info
+    complete = (
+        has_age
+        & has_bmi
+        & has_fbg
+        & has_antibiotics
+        & has_tumor_info
+        & has_disease_info
+    )
     meta_df = meta_df[complete].copy()
     print(f"  Samples with complete data: {len(meta_df):,}")
 
@@ -203,20 +252,22 @@ def process_ggmp():
     is_healthy = all_diseases_negative & no_tumor & fbg_ok & bmi_ok & no_antibiotics
     meta_df["health"] = np.where(is_healthy, "y", "n")
 
-    print_cohort_stats(meta_df, "GGMP",
-                       paper_total=6014, paper_healthy=1133, paper_nonhealthy=4881)
+    print_cohort_stats(
+        meta_df, "GGMP", paper_total=6014, paper_healthy=1133, paper_nonhealthy=4881
+    )
 
     # ── Map SampleIDs to BIOM format & load OTU data ──────────────────────
     print("\n[4/4] Loading BIOM and filtering OTUs...")
 
     # Table S4 SampleID: "G440205594" -> BIOM: "11757.G440205594.56280"
     biom_id_map = {
-        GGMP_BIOM_PREFIX + sid + GGMP_BIOM_SUFFIX: sid
-        for sid in meta_df["SampleID"]
+        GGMP_BIOM_PREFIX + sid + GGMP_BIOM_SUFFIX: sid for sid in meta_df["SampleID"]
     }
     biom_ids = list(biom_id_map.keys())
 
-    otu_df = biom_to_filtered_dataframe(GGMP_BIOM_PATH, biom_ids, OTU_PREVALENCE_THRESHOLD)
+    otu_df = biom_to_filtered_dataframe(
+        GGMP_BIOM_PATH, biom_ids, OTU_PREVALENCE_THRESHOLD
+    )
     print(f"  (Paper reports: 942 OTUs after filtering)")
 
     # Build output with BIOM IDs as index (what gai_cal.py expects)
@@ -233,11 +284,14 @@ def process_ggmp():
 
     otu_out = otu_df.loc[meta_out.index].copy()
 
-    print(f"\n  Final GGMP output: {len(meta_out):,} samples, {otu_out.shape[1]:,} OTUs")
+    print(
+        f"\n  Final GGMP output: {len(meta_out):,} samples, {otu_out.shape[1]:,} OTUs"
+    )
     return meta_out, otu_out
 
 
 # ─── AGP Processing ──────────────────────────────────────────────────────────
+
 
 def process_agp():
     """
@@ -273,13 +327,16 @@ def process_agp():
     valid = meta_df["age"].notna() & meta_df["health"].isin(["y", "n"])
     meta_df = meta_df[valid].copy()
 
-    print_cohort_stats(meta_df, "AGP",
-                       paper_total=5966, paper_healthy=1852, paper_nonhealthy=4114)
+    print_cohort_stats(
+        meta_df, "AGP", paper_total=5966, paper_healthy=1852, paper_nonhealthy=4114
+    )
 
     # ── Load BIOM & filter OTUs ───────────────────────────────────────────
     print("\n[2/3] Loading BIOM and filtering OTUs...")
     biom_ids = meta_df["SampleID"].tolist()
-    otu_df = biom_to_filtered_dataframe(AGP_BIOM_PATH, biom_ids, OTU_PREVALENCE_THRESHOLD)
+    otu_df = biom_to_filtered_dataframe(
+        AGP_BIOM_PATH, biom_ids, OTU_PREVALENCE_THRESHOLD
+    )
 
     # ── Align and output ──────────────────────────────────────────────────
     print("\n[3/3] Aligning metadata and OTU data...")
@@ -297,6 +354,7 @@ def process_agp():
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
+
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -307,7 +365,12 @@ def main():
     ggmp_meta, ggmp_otu = process_ggmp()
     ggmp_meta.to_csv(os.path.join(ggmp_dir, "meta.tsv"), sep="\t")
     ggmp_otu.to_csv(os.path.join(ggmp_dir, "otu.tsv"), sep="\t")
-    print(f"\n  Saved: {ggmp_dir}/meta.tsv  ({ggmp_meta.shape[0]} x {ggmp_meta.shape[1]})")
+    print(
+        f"\n  Saved: {ggmp_dir}/meta.tsv  ({ggmp_meta.shape[0]} x {ggmp_meta.shape[1]})"
+    )
+    print(
+        f"\n  Saved: {ggmp_dir}/meta.tsv  ({ggmp_meta.shape[0]} x {ggmp_meta.shape[1]})"
+    )
     print(f"  Saved: {ggmp_dir}/otu.tsv   ({ggmp_otu.shape[0]} x {ggmp_otu.shape[1]})")
 
     # ── AGP ───────────────────────────────────────────────────────────────
