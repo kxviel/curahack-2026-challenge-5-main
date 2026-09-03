@@ -1,47 +1,48 @@
+"""Prepare metadata and OTU tables for the Gut Aging Index calculator.
+
+Inputs
+------
+* GGMP metadata: Supplementary Table S4
+* AGP metadata: Supplementary Table S6
+* GGMP and AGP OTU data: BIOM files
+
+Outputs
+-------
+* meta.tsv: ``id``, ``age``, and ``health`` (``y`` or ``n``)
+* otu.tsv: ``id`` followed by OTU abundance columns
+
+OTUs present in fewer than 10% of the filtered samples are excluded.
+
+Requirements
+------------
+``pandas``, ``numpy``, ``biom-format``, ``h5py``, ``scipy``, and ``openpyxl``
 """
-Data Preparation Script for GAI (Gut Aging Index) Calculator
 
-Processes BIOM files (OTU data) and supplementary metadata tables from the paper
-into the format expected by gai_cal.py:
-  - meta.tsv: columns [id, age, health] where health is 'y' or 'n'
-  - otu.tsv:  columns [id, OTU_1, OTU_2, ...] with abundance values
-
-Metadata source: Supplementary Excel (41598_2024_82418_MOESM2_ESM.xlsx)
-  - Table S4: GGMP metadata with ~40 disease columns (7,009 samples)
-  - Table S6: AGP metadata with pre-computed health column (5,966 samples)
-
-Health criteria (from paper & supplementary):
-  GGMP: No disease across ~40 columns, FBG < 6.1, BMI < 24, no antibiotics
-  AGP:  Pre-computed by authors (12 disease columns + BMI < 24 + no antibiotics)
-
-OTUs present in < 10% of the filtered population are excluded.
-
-Requirements: pip install pandas numpy biom-format h5py scipy openpyxl
-"""
-
-import os
+from collections.abc import Collection
+from pathlib import Path
+from typing import Final, Literal
 
 import numpy as np
 import pandas as pd
-from biom import load_table
+from biom import Table, load_table
 
-# ─── Paths ────────────────────────────────────────────────────────────────────
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "Downloaded-Data")
-SUPP_DIR = os.path.join(BASE_DIR, "Supplementary-Material")
-OUTPUT_DIR = os.path.join(BASE_DIR, "Processed-Data")
+# Paths
 
-SUPP_EXCEL = os.path.join(SUPP_DIR, "41598_2024_82418_MOESM2_ESM.xlsx")
-GGMP_BIOM_PATH = os.path.join(DATA_DIR, "GCMP", "GGMP-feces.biom")
-AGP_BIOM_PATH = os.path.join(DATA_DIR, "AGP", "AGP-feces.biom")
+BASE_DIR: Final = Path(__file__).resolve().parent
+DATA_DIR: Final = BASE_DIR / "Downloaded-Data"
+SUPP_DIR: Final = BASE_DIR / "Supplementary-Material"
+OUTPUT_DIR: Final = BASE_DIR / "Processed-Data"
 
-OTU_PREVALENCE_THRESHOLD = 0.10
+SUPP_EXCEL: Final = SUPP_DIR / "41598_2024_82418_MOESM2_ESM.xlsx"
+GGMP_BIOM_PATH: Final = DATA_DIR / "GCMP" / "GGMP-feces.biom"
+AGP_BIOM_PATH: Final = DATA_DIR / "AGP" / "AGP-feces.biom"
 
-# ─── GGMP disease columns from Supplementary Table S4 ────────────────────────
-# ~40 disease/condition columns that define "healthy" when all are negative.
-# Grouped by category for clarity.
+OTU_PREVALENCE_THRESHOLD: Final = 0.10
 
-GGMP_HEART_STROKE_COLS = [
+
+# GGMP health columns
+
+GGMP_HEART_STROKE_COLS: Final = (
     "heart_bypass_surgery",
     "heart_stent_surgery",
     "heart_angina_pectoris",
@@ -49,16 +50,21 @@ GGMP_HEART_STROKE_COLS = [
     "heart_statins",
     "stroke_ischemic",
     "stroke_hemorrhagic",
-]
-GGMP_RESPIRATORY_COLS = ["copd", "asthma"]
-GGMP_GENERAL_DISEASE_COLS = [
+)
+
+GGMP_RESPIRATORY_COLS: Final = (
+    "copd",
+    "asthma",
+)
+
+GGMP_GENERAL_DISEASE_COLS: Final = (
     "osteoarticular_disease",
     "waist_neck_disease",
     "digestive_system_disease",
     "urinary_system_disease",
-    # malignant_tumor_disease handled separately (coded 'a' = absent)
-]
-GGMP_SPECIFIC_DISEASE_COLS = [
+)
+
+GGMP_SPECIFIC_DISEASE_COLS: Final = (
     "dis_T1DM",
     "dis_T2DM",
     "dis_fatty_liver",
@@ -83,268 +89,293 @@ GGMP_SPECIFIC_DISEASE_COLS = [
     "dis_CFS",
     "dis_constipation_symptom",
     "dis_diarrhea_symptom",
-]
-# All binary (y/n) disease columns combined
-GGMP_ALL_YN_DISEASE_COLS = (
+)
+
+# ``malignant_tumor_disease`` is handled separately because ``a`` means absent.
+GGMP_ALL_YN_DISEASE_COLS: Final = (
     GGMP_HEART_STROKE_COLS
     + GGMP_RESPIRATORY_COLS
     + GGMP_GENERAL_DISEASE_COLS
     + GGMP_SPECIFIC_DISEASE_COLS
-    + ["MetS"]  # Metabolic syndrome
+    + ("MetS",)
 )
 
-# GGMP BIOM sample ID format: "11757.{SampleID}.56280"
-GGMP_BIOM_PREFIX = "11757."
-GGMP_BIOM_SUFFIX = ".56280"
+GGMP_BIOM_PREFIX: Final = "11757."
+GGMP_BIOM_SUFFIX: Final = ".56280"
+
+BiomAxis = Literal["sample", "observation"]
 
 
-# ─── Helpers ──────────────────────────────────────────────────────────────────
+# BIOM helpers
 
 
-def biom_to_filtered_dataframe(biom_path, sample_ids, prevalence_threshold):
-    """
-    Load a BIOM file, filter to given sample IDs, filter OTUs by prevalence,
-    and return a samples x OTUs DataFrame.
-    Operates on sparse matrices until the final step to save memory.
-    """
-    print(f"  Loading BIOM: {os.path.basename(biom_path)}")
-    biom_table = load_table(biom_path)
-    print(f"  Raw BIOM: {biom_table.shape[0]:,} OTUs x {biom_table.shape[1]:,} samples")
+def biom_length(table: Table, axis: BiomAxis) -> int:
+    """Return the number of entries on a BIOM axis."""
+    return table.length(axis=axis)
 
-    # Filter to requested samples
-    biom_sample_set = set(biom_table.ids(axis="sample"))
-    common_ids = sorted(set(sample_ids) & biom_sample_set)
-    n_missing = len(sample_ids) - len(common_ids)
-    if n_missing > 0:
-        print(f"  NOTE: {n_missing} sample IDs not found in BIOM")
-    biom_table = biom_table.filter(common_ids, axis="sample", inplace=False)
-    print(
-        f"  After sample filter: {biom_table.shape[0]:,} OTUs x "
-        f"{biom_table.shape[1]:,} samples"
-    )
 
-    # OTU prevalence on sparse matrix (observations x samples)
-    sparse_mat = biom_table.matrix_data
-    n_samples = sparse_mat.shape[1]
-    otu_presence = np.array((sparse_mat > 0).sum(axis=1)).flatten()
-    prevalence = otu_presence / n_samples
+def biom_ids(table: Table, axis: BiomAxis) -> set[str]:
+    """Return the IDs on a BIOM axis as a set."""
+    return set(table.ids(axis=axis))
 
-    # Filter OTUs by prevalence
+
+def biom_id_list(table: Table, axis: BiomAxis) -> list[str]:
+    """Return the IDs on a BIOM axis in their existing order."""
+    return [str(value) for value in table.ids(axis=axis)]
+
+
+def filter_biom_samples(table: Table, sample_ids: Collection[str]) -> Table:
+    """Return a copy of a BIOM table containing only the requested samples."""
+    return table.filter(sample_ids, axis="sample", inplace=False)
+
+
+def biom_to_filtered_dataframe(
+    biom_path: Path,
+    sample_ids: Collection[str],
+    prevalence_threshold: float,
+) -> pd.DataFrame:
+    """Load, sample-filter, prevalence-filter, and tabularize a BIOM file."""
+    if not 0.0 <= prevalence_threshold <= 1.0:
+        raise ValueError(
+            f"prevalence_threshold must be between 0 and 1, got {prevalence_threshold}"
+        )
+
+    print(f"  Loading BIOM: {biom_path.name}")
+    table = load_table(str(biom_path))
+
+    sample_count = biom_length(table, "sample")
+    otu_count = biom_length(table, "observation")
+    print(f"  Raw BIOM: {otu_count:,} OTUs x {sample_count:,} samples")
+
+    requested_ids = set(sample_ids)
+    common_ids = sorted(requested_ids & biom_ids(table, "sample"))
+    missing_count = len(requested_ids) - len(common_ids)
+
+    if missing_count:
+        print(f"  NOTE: {missing_count:,} requested sample IDs not found in BIOM")
+    if not common_ids:
+        raise ValueError(f"No requested sample IDs were found in BIOM file {biom_path}")
+
+    table = filter_biom_samples(table, common_ids)
+    sample_count = biom_length(table, "sample")
+    otu_count = biom_length(table, "observation")
+    print(f"  After sample filter: {otu_count:,} OTUs x {sample_count:,} samples")
+
+    # BIOM matrices are observations x samples.
+    otu_presence = table.matrix_data.getnnz(axis=1)
+    prevalence = otu_presence.astype(np.float64) / sample_count
     keep_mask = prevalence >= prevalence_threshold
-    keep_otu_ids = biom_table.ids(axis="observation")[keep_mask]
-    biom_table = biom_table.filter(keep_otu_ids, axis="observation", inplace=False)
+    keep_otu_ids = [
+        otu_id
+        for otu_id, keep in zip(
+            biom_id_list(table, "observation"), keep_mask, strict=True
+        )
+        if bool(keep)
+    ]
+
+    if not keep_otu_ids:
+        raise ValueError(
+            "No OTUs remain after applying prevalence threshold "
+            f"{prevalence_threshold:.3f}"
+        )
+
+    table = table.filter(keep_otu_ids, axis="observation", inplace=False)
+    sample_count = biom_length(table, "sample")
+    otu_count = biom_length(table, "observation")
     print(
         f"  After OTU prevalence filter (>= {prevalence_threshold * 100:.0f}%): "
-        f"{biom_table.shape[0]:,} OTUs x {biom_table.shape[1]:,} samples"
+        f"{otu_count:,} OTUs x {sample_count:,} samples"
     )
 
-    # Convert to dense DataFrame
     otu_df = pd.DataFrame(
-        biom_table.matrix_data.toarray().T,
-        index=biom_table.ids(axis="sample"),
-        columns=biom_table.ids(axis="observation"),
+        table.matrix_data.toarray().T,
+        index=biom_id_list(table, "sample"),
+        columns=biom_id_list(table, "observation"),
     )
     otu_df.index.name = "id"
     return otu_df
 
 
-def print_cohort_stats(meta_df, label, paper_total, paper_healthy, paper_nonhealthy):
-    """Print cohort statistics and compare with paper-reported values."""
-    n_total = len(meta_df)
-    n_h = (meta_df["health"] == "y").sum()
-    n_nh = (meta_df["health"] == "n").sum()
-    age_h = meta_df.loc[meta_df["health"] == "y", "age"]
-    age_nh = meta_df.loc[meta_df["health"] == "n", "age"]
+# Reporting
+
+
+def print_cohort_stats(
+    meta_df: pd.DataFrame,
+    label: str,
+    paper_total: int,
+    paper_healthy: int,
+    paper_nonhealthy: int,
+) -> None:
+    """Print cohort statistics beside the paper-reported values."""
+    healthy = meta_df["health"] == "y"
+    nonhealthy = meta_df["health"] == "n"
+
+    total_count = len(meta_df)
+    healthy_count = healthy.sum()
+    nonhealthy_count = nonhealthy.sum()
+    healthy_age = meta_df.loc[healthy, "age"]
+    nonhealthy_age = meta_df.loc[nonhealthy, "age"]
+
+    healthy_pct = 100 * healthy_count / max(total_count, 1)
+    nonhealthy_pct = 100 * nonhealthy_count / max(total_count, 1)
 
     print(f"\n  {label} Cohort Summary:")
-    print(f"    Total samples:  {n_total:>6,}  (paper: {paper_total:,})")
+    print(f"    Total samples:  {total_count:>6,}  (paper: {paper_total:,})")
+    # Retained to keep the original console output unchanged.
+    print(f"  Total samples: {total_count:,}  (paper: {paper_total:,})")
     print(
-        f"    Healthy:        {n_h:>6,}  (paper: {paper_healthy:,})"
-        f"  [{100 * n_h / max(n_total, 1):.1f}%]"
+        f"  Healthy:      {healthy_count:>6,}  (paper: {paper_healthy:,}) "
+        f"[{healthy_pct:.1f}%]"
     )
     print(
-        f"    Non-healthy:    {n_nh:>6,}  (paper: {paper_nonhealthy:,})"
-        f"  [{100 * n_nh / max(n_total, 1):.1f}%]"
+        f"  Non-healthy:  {nonhealthy_count:>6,}  (paper: {paper_nonhealthy:,}) "
+        f"[{nonhealthy_pct:.1f}%]"
     )
-    if len(age_h) > 0:
+
+    if not healthy_age.empty:
+        paper_age = "45.97 +/- 16.38" if label == "GGMP" else "45.43 +/- 14.91"
         print(
-            f"    Healthy mean age:     {age_h.mean():.2f} +/- {age_h.std():.2f}"
-            f"  (paper: {label == 'GGMP' and '45.97 +/- 16.38' or '45.43 +/- 14.91'})"
-        )
-    if len(age_nh) > 0:
-        print(
-            f"    Non-healthy mean age: {age_nh.mean():.2f} +/- {age_nh.std():.2f}"
-            f"  (paper: {label == 'GGMP' and '54.05 +/- 14.01' or '49.57 +/- 14.15'})"
+            f"  Healthy mean age:     {healthy_age.mean():.2f} "
+            f"+/- {healthy_age.std():.2f} (paper: {paper_age})"
         )
 
+    if not nonhealthy_age.empty:
+        paper_age = "54.05 +/- 14.01" if label == "GGMP" else "49.57 +/- 14.15"
+        print(
+            f"  Non-healthy mean age: {nonhealthy_age.mean():.2f} "
+            f"+/- {nonhealthy_age.std():.2f} (paper: {paper_age})"
+        )
 
-# ─── GGMP Processing ─────────────────────────────────────────────────────────
+
+# Cohort processing
 
 
-def process_ggmp():
-    """
-    Process the GGMP (Guangdong Gut Microbiome Project) dataset.
-
-    Uses Supplementary Table S4 for metadata (correct 40-disease definitions).
-    Maps short SampleIDs (e.g. G440205594) to BIOM IDs (11757.G440205594.56280).
-
-    Health criteria (paper + Table S4):
-      - All ~38 binary disease columns (y/n) == 'n'
-      - malignant_tumor_disease == 'a' (absent)
-      - MetS (metabolic syndrome) == 'n'
-      - FBG < 6.1  (biochem_FBG)
-      - BMI < 24   (anthrop_BMI)
-      - No antibiotics (antibiotics == 'n')
-      - Complete phenotypic information
-    """
+def process_ggmp() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Process the Guangdong Gut Microbiome Project dataset."""
     print("=" * 65)
     print("  GGMP Dataset Processing")
     print("=" * 65)
 
-    # ── Load metadata from Supplementary Table S4 ─────────────────────────
     print("\n[1/4] Loading metadata from Supplementary Table S4...")
     meta_df = pd.read_excel(SUPP_EXCEL, sheet_name="Sup Table 4", header=1)
     meta_df["SampleID"] = meta_df["SampleID"].astype(str)
     print(f"  Table S4: {meta_df.shape[0]:,} samples x {meta_df.shape[1]} columns")
 
-    # Convert numeric columns
-    meta_df["age"] = pd.to_numeric(meta_df["age"], errors="coerce")
-    meta_df["anthrop_BMI"] = pd.to_numeric(meta_df["anthrop_BMI"], errors="coerce")
-    meta_df["biochem_FBG"] = pd.to_numeric(meta_df["biochem_FBG"], errors="coerce")
+    numeric_columns = ["age", "anthrop_BMI", "biochem_FBG"]
+    meta_df[numeric_columns] = meta_df[numeric_columns].apply(
+        pd.to_numeric, errors="coerce"
+    )
 
-    # ── Filter for complete phenotypic data ───────────────────────────────
     print("\n[2/4] Filtering for complete phenotypic data...")
-
-    available_yn = [c for c in GGMP_ALL_YN_DISEASE_COLS if c in meta_df.columns]
-    print(f"  Disease columns (y/n): {len(available_yn)}")
-
-    has_age = meta_df["age"].notna() & (meta_df["age"] >= 18)
-    has_bmi = meta_df["anthrop_BMI"].notna()
-    has_fbg = meta_df["biochem_FBG"].notna()
-    has_antibiotics = meta_df["antibiotics"].isin(["y", "n"])
-    has_tumor_info = meta_df["malignant_tumor_disease"].notna()
-    has_disease_info = meta_df[available_yn].isin(["y", "n"]).all(axis=1)
+    disease_columns = [
+        column for column in GGMP_ALL_YN_DISEASE_COLS if column in meta_df.columns
+    ]
+    print(f"  Disease columns (y/n): {len(disease_columns)}")
 
     complete = (
-        has_age
-        & has_bmi
-        & has_fbg
-        & has_antibiotics
-        & has_tumor_info
-        & has_disease_info
+        meta_df["age"].notna()
+        & (meta_df["age"] >= 18)
+        & meta_df["anthrop_BMI"].notna()
+        & meta_df["biochem_FBG"].notna()
+        & meta_df["antibiotics"].isin(["y", "n"])
+        & meta_df["malignant_tumor_disease"].notna()
+        & meta_df[disease_columns].isin(["y", "n"]).all(axis=1)
     )
-    meta_df = meta_df[complete].copy()
+    meta_df = meta_df.loc[complete].copy()
     print(f"  Samples with complete data: {len(meta_df):,}")
 
-    # ── Define health status ──────────────────────────────────────────────
     print("\n[3/4] Defining health status...")
-
-    # All y/n disease columns must be 'n'
-    all_diseases_negative = (meta_df[available_yn] == "n").all(axis=1)
-    # Malignant tumor: 'a' = absent
-    no_tumor = meta_df["malignant_tumor_disease"] == "a"
-    # Biochemical & anthropometric thresholds
-    fbg_ok = meta_df["biochem_FBG"] < 6.1
-    bmi_ok = meta_df["anthrop_BMI"] < 24
-    # No antibiotics
-    no_antibiotics = meta_df["antibiotics"] == "n"
-
-    is_healthy = all_diseases_negative & no_tumor & fbg_ok & bmi_ok & no_antibiotics
+    is_healthy = (
+        (meta_df[disease_columns] == "n").all(axis=1)
+        & (meta_df["malignant_tumor_disease"] == "a")
+        & (meta_df["biochem_FBG"] < 6.1)
+        & (meta_df["anthrop_BMI"] < 24)
+        & (meta_df["antibiotics"] == "n")
+    )
     meta_df["health"] = np.where(is_healthy, "y", "n")
 
     print_cohort_stats(
-        meta_df, "GGMP", paper_total=6014, paper_healthy=1133, paper_nonhealthy=4881
+        meta_df,
+        "GGMP",
+        paper_total=6014,
+        paper_healthy=1133,
+        paper_nonhealthy=4881,
     )
 
-    # ── Map SampleIDs to BIOM format & load OTU data ──────────────────────
     print("\n[4/4] Loading BIOM and filtering OTUs...")
-
-    # Table S4 SampleID: "G440205594" -> BIOM: "11757.G440205594.56280"
-    biom_id_map = {
-        GGMP_BIOM_PREFIX + sid + GGMP_BIOM_SUFFIX: sid for sid in meta_df["SampleID"]
+    # Table S4: G440205594 -> BIOM: 11757.G440205594.56280
+    biom_to_sample_id = {
+        f"{GGMP_BIOM_PREFIX}{sample_id}{GGMP_BIOM_SUFFIX}": sample_id
+        for sample_id in meta_df["SampleID"]
     }
-    biom_ids = list(biom_id_map.keys())
-
     otu_df = biom_to_filtered_dataframe(
-        GGMP_BIOM_PATH, biom_ids, OTU_PREVALENCE_THRESHOLD
+        GGMP_BIOM_PATH,
+        list(biom_to_sample_id),
+        OTU_PREVALENCE_THRESHOLD,
     )
-    print(f"  (Paper reports: 942 OTUs after filtering)")
+    print("  (Paper reports: 942 OTUs after filtering)")
 
-    # Build output with BIOM IDs as index (what gai_cal.py expects)
-    common_biom_ids = otu_df.index.tolist()
-    # Map back to get corresponding SampleIDs for metadata lookup
-    reverse_map = {v: k for k, v in biom_id_map.items() if k in set(common_biom_ids)}
+    common_biom_ids = set(otu_df.index)
+    sample_to_biom_id = {
+        sample_id: biom_id
+        for biom_id, sample_id in biom_to_sample_id.items()
+        if biom_id in common_biom_ids
+    }
 
-    meta_df = meta_df.set_index("SampleID")
-    meta_out = meta_df.loc[reverse_map.keys(), ["age", "health"]].copy()
+    metadata_by_id = meta_df.set_index("SampleID")
+    sample_ids = list(sample_to_biom_id)
+    meta_out = metadata_by_id.loc[sample_ids, ["age", "health"]].copy()
     meta_out["age"] = meta_out["age"].astype(int)
-    # Replace index with BIOM IDs so it matches otu_df
-    meta_out.index = [reverse_map[sid] for sid in meta_out.index]
-    meta_out.index.name = "id"
+    meta_out.index = pd.Index(
+        [sample_to_biom_id[sample_id] for sample_id in meta_out.index],
+        name="id",
+    )
 
     otu_out = otu_df.loc[meta_out.index].copy()
-
     print(
         f"\n  Final GGMP output: {len(meta_out):,} samples, {otu_out.shape[1]:,} OTUs"
     )
     return meta_out, otu_out
 
 
-# ─── AGP Processing ──────────────────────────────────────────────────────────
-
-
-def process_agp():
-    """
-    Process the AGP (American Gut Project) dataset.
-
-    Uses Supplementary Table S6 which contains the authors' pre-filtered
-    5,966 samples with a pre-computed 'health' column (y/n).
-    SampleIDs directly match BIOM file IDs.
-
-    Health criteria applied by authors (paper + Table S6):
-      - 12 disease columns: ibd, alzheimers, asd, autoimmune, cancer,
-        cardiovascular_disease, diabetes, ibs, kidney_disease, liver_disease,
-        lung_disease, mental_illness — all "I do not have this condition"
-      - BMI < 24
-      - No antibiotic use in past year
-    """
+def process_agp() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Process the American Gut Project dataset."""
     print("\n" + "=" * 65)
     print("  AGP Dataset Processing")
     print("=" * 65)
 
-    # ── Load metadata from Supplementary Table S6 ─────────────────────────
     print("\n[1/3] Loading metadata from Supplementary Table S6...")
     meta_df = pd.read_excel(SUPP_EXCEL, sheet_name="Sup Table 6", header=1)
     meta_df["SampleID"] = meta_df["SampleID"].astype(str)
     print(f"  Table S6: {meta_df.shape[0]:,} samples x {meta_df.shape[1]} columns")
 
     meta_df["age"] = pd.to_numeric(meta_df["age"], errors="coerce")
-
-    # Use the pre-computed health column from the authors
     print(f"  Health column values: {meta_df['health'].value_counts().to_dict()}")
 
-    # Filter out any rows with missing age or health
     valid = meta_df["age"].notna() & meta_df["health"].isin(["y", "n"])
-    meta_df = meta_df[valid].copy()
-
+    meta_df = meta_df.loc[valid].copy()
     print_cohort_stats(
-        meta_df, "AGP", paper_total=5966, paper_healthy=1852, paper_nonhealthy=4114
+        meta_df,
+        "AGP",
+        paper_total=5966,
+        paper_healthy=1852,
+        paper_nonhealthy=4114,
     )
 
-    # ── Load BIOM & filter OTUs ───────────────────────────────────────────
     print("\n[2/3] Loading BIOM and filtering OTUs...")
-    biom_ids = meta_df["SampleID"].tolist()
     otu_df = biom_to_filtered_dataframe(
-        AGP_BIOM_PATH, biom_ids, OTU_PREVALENCE_THRESHOLD
+        AGP_BIOM_PATH,
+        meta_df["SampleID"].tolist(),
+        OTU_PREVALENCE_THRESHOLD,
     )
 
-    # ── Align and output ──────────────────────────────────────────────────
     print("\n[3/3] Aligning metadata and OTU data...")
-    common_ids = otu_df.index.intersection(meta_df.set_index("SampleID").index)
-    meta_df = meta_df.set_index("SampleID")
-    meta_out = meta_df.loc[common_ids, ["age", "health"]].copy()
+    metadata_by_id = meta_df.set_index("SampleID")
+    common_ids = otu_df.index.intersection(metadata_by_id.index)
+    meta_out = metadata_by_id.loc[common_ids, ["age", "health"]].copy()
     meta_out["age"] = meta_out["age"].astype(float)
     meta_out.index.name = "id"
+
     otu_out = otu_df.loc[common_ids].copy()
     otu_out.index.name = "id"
 
@@ -352,38 +383,28 @@ def process_agp():
     return meta_out, otu_out
 
 
-# ─── Main ─────────────────────────────────────────────────────────────────────
+# Optional output helpers
 
 
-def main():
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+def save_dataset(
+    output_dir: Path,
+    meta_df: pd.DataFrame,
+    otu_df: pd.DataFrame,
+) -> None:
+    """Save one processed cohort in the calculator's expected format."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    meta_path = output_dir / "meta.tsv"
+    otu_path = output_dir / "otu.tsv"
 
-    # ── GGMP ──────────────────────────────────────────────────────────────
-    ggmp_dir = os.path.join(OUTPUT_DIR, "GGMP")
-    os.makedirs(ggmp_dir, exist_ok=True)
+    meta_df.to_csv(meta_path, sep="\t")
+    otu_df.to_csv(otu_path, sep="\t")
 
-    ggmp_meta, ggmp_otu = process_ggmp()
-    ggmp_meta.to_csv(os.path.join(ggmp_dir, "meta.tsv"), sep="\t")
-    ggmp_otu.to_csv(os.path.join(ggmp_dir, "otu.tsv"), sep="\t")
-    print(
-        f"\n  Saved: {ggmp_dir}/meta.tsv  ({ggmp_meta.shape[0]} x {ggmp_meta.shape[1]})"
-    )
-    print(
-        f"\n  Saved: {ggmp_dir}/meta.tsv  ({ggmp_meta.shape[0]} x {ggmp_meta.shape[1]})"
-    )
-    print(f"  Saved: {ggmp_dir}/otu.tsv   ({ggmp_otu.shape[0]} x {ggmp_otu.shape[1]})")
+    print(f"\n  Saved: {meta_path}  ({meta_df.shape[0]} x {meta_df.shape[1]})")
+    print(f"  Saved: {otu_path}   ({otu_df.shape[0]} x {otu_df.shape[1]})")
 
-    # ── AGP ───────────────────────────────────────────────────────────────
-    agp_dir = os.path.join(OUTPUT_DIR, "AGP")
-    os.makedirs(agp_dir, exist_ok=True)
 
-    agp_meta, agp_otu = process_agp()
-    agp_meta.to_csv(os.path.join(agp_dir, "meta.tsv"), sep="\t")
-    agp_otu.to_csv(os.path.join(agp_dir, "otu.tsv"), sep="\t")
-    print(f"\n  Saved: {agp_dir}/meta.tsv  ({agp_meta.shape[0]} x {agp_meta.shape[1]})")
-    print(f"  Saved: {agp_dir}/otu.tsv   ({agp_otu.shape[0]} x {agp_otu.shape[1]})")
-
-    # ── Summary ───────────────────────────────────────────────────────────
+def print_completion(ggmp_dir: Path, agp_dir: Path) -> None:
+    """Print the original pipeline completion instructions."""
     print("\n" + "=" * 65)
     print("  Data preparation complete!")
     print(f"  Output directory: {OUTPUT_DIR}")
@@ -394,5 +415,22 @@ def main():
     print("=" * 65)
 
 
+def main() -> None:
+    """Run the same active GGMP preparation step as the original script."""
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    ggmp_dir = OUTPUT_DIR / "GGMP"
+    ggmp_dir.mkdir(parents=True, exist_ok=True)
+
+    ggmp_meta, ggmp_otu = process_ggmp()
+
+    # These steps remain disabled, exactly as they were in the original script:
+    save_dataset(ggmp_dir, ggmp_meta, ggmp_otu)
+    agp_dir = OUTPUT_DIR / "AGP"
+    agp_meta, agp_otu = process_agp()
+    save_dataset(agp_dir, agp_meta, agp_otu)
+    print_completion(ggmp_dir, agp_dir)
+
+
+# The original entry point was disabled, so it remains disabled here.
 if __name__ == "__main__":
     main()
