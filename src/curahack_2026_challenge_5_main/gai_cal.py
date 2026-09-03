@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pandas as pd
 from catboost import CatBoostRegressor
-from pycaret.regression import *
+from pycaret import save_model
+from pycaret.tasks import RegressionExperiment
 
 
 def split_otu_by_health(meta_path, otu_path):
@@ -31,27 +32,39 @@ class CatBoostRegressorClonable(CatBoostRegressor):
 
 
 def model_health_ages(predicted_age_df, otu_df, output_dir):
-    # Use pycaret to model healthy otu_df and predict the physiological age of the samples
-    reg = setup(
-        data=predicted_age_df, target="age", session_id=123, use_gpu=True
-    )  # , silent = True) ## ADDED GPU
-    best_model = compare_models(exclude=["lightgbm"])
-    compare_models_df = pull()
+    # Use PyCaret 4 to model healthy otu_df and predict physiological age
+    reg = RegressionExperiment(target="age", session_id=123)
+    reg.fit(predicted_age_df)
+
+    compare_result = reg.compare_models(exclude=["lightgbm"])
+    best_model = compare_result.best
+
+    compare_models_df = compare_result.leaderboard
     compare_models_df.to_csv("compare_models.tsv", sep="\t", index=True)
 
-    if isinstance(best_model, CatBoostRegressor):
-        catboost_params = best_model.get_params()
-        catboost_params.update({"task_type": "GPU", "devices": "0"})  ## ADDED GPU
-        best_model = CatBoostRegressorClonable(**catboost_params)
+    # PyCaret 4 returns a sklearn Pipeline instead of the bare estimator.
+    # If CatBoost won, replace its final estimator with the GPU-enabled version.
+    if isinstance(best_model.steps[-1][1], CatBoostRegressor):
+        catboost_params = best_model.steps[-1][1].get_params()
+        catboost_params.update({"task_type": "GPU", "devices": "0"})
 
-    tuned_best_model = tune_model(best_model)
-    tuned_best_model_df = pull()
+        estimator_step = best_model.steps[-1][0]
+        best_model.set_params(
+            **{estimator_step: CatBoostRegressorClonable(**catboost_params)}
+        )
+
+    tune_result = reg.tune_model(best_model)
+    tuned_best_model = tune_result.pipeline
+
+    tuned_best_model_df = tune_result.cv_results
     tuned_best_model_df.to_csv(
         output_dir / "tuned_best_model.tsv", sep="\t", index=True
     )
 
-    final_best_model = finalize_model(tuned_best_model)
-    age_predictions = predict_model(final_best_model, data=otu_df)
+    final_best_model = reg.finalize_model(tuned_best_model)
+
+    prediction_result = reg.predict_model(final_best_model, data=otu_df)
+    age_predictions = prediction_result.predictions
 
     current_date = datetime.datetime.now().strftime("%Y%m%d")
     save_model(final_best_model, output_dir / f"final_best_model_{current_date}")
