@@ -21,3 +21,8 @@ curahack-2026-challenge-5-main = "curahack_2026_challenge_5_main:main"
 [build-system]
 requires = ["uv_build>=0.12.7,<0.13.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pandas-stubs>=3.0.5.260730",
+]
