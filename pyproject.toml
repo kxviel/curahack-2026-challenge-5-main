@@ -6,7 +6,7 @@ readme = "README.md"
 authors = [
     { name = "Kevin D Goveas", email = "kevdanngovead@gmail.com" }
 ]
-requires-python = ">=3.11"
+requires-python = ">=3.11.16"
 dependencies = [
     "biom-format>=2.1.17",
     "catboost>=1.2.10",
