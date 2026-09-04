@@ -1,12 +1,9 @@
 import datetime
-import sys
 from pathlib import Path
 from typing import Final
 
 import pandas as pd
 from pycaret.tasks import RegressionExperiment
-
-PathLike = str | Path
 
 AGE_RANGES: Final[tuple[tuple[int, int], ...]] = (
     (18, 20),
@@ -26,7 +23,7 @@ AGE_RANGES: Final[tuple[tuple[int, int], ...]] = (
 
 
 def split_otu_by_health(
-    meta_path: PathLike, otu_path: PathLike
+    meta_path: Path, otu_path: Path
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     # Read meta.tsv and otu.tsv
     meta_df = pd.read_csv(meta_path, sep="\t")
@@ -56,14 +53,22 @@ def model_health_ages(
     reg.fit(predicted_age_df)
 
     # Keep exclude=["lightgbm"] to preserve the original behavior.
-    compare_result = reg.compare_models(exclude=["lightgbm"])
+    compare_result = reg.compare_models(
+        # exclude=["lightgbm"],
+        # sort="MAE",
+        # errors="raise",
+    )
     compare_result.leaderboard.to_csv(
         "compare_models.tsv",
         sep="\t",
         index=True,
     )
 
-    tune_result = reg.tune_model(compare_result.best)
+    tune_result = reg.tune_model(
+        compare_result.best,
+        # optimize="MAE",
+        # n_iter=50,
+    )
     tune_result.metrics.to_csv(
         output_dir / "tuned_best_model.tsv",
         sep="\t",
@@ -124,13 +129,13 @@ def calculate_corrected_gai(meta_df):
     return meta_df
 
 
-def save_result(meta_df: pd.DataFrame, result_path: PathLike) -> None:
+def save_result(meta_df: pd.DataFrame, result_path: Path) -> None:
     """Save the completed results table as a TSV file."""
     meta_df.to_csv(result_path, sep="\t", index=True)
     print(f"Saved result as {result_path}")
 
 
-def main(meta_path: PathLike, otu_path: PathLike, output_dir: PathLike):
+def main(meta_path: Path, otu_path: Path, output_dir: Path):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -151,19 +156,3 @@ def main(meta_path: PathLike, otu_path: PathLike, output_dir: PathLike):
 
     # Save final result as result.tsv
     save_result(meta_df, output_dir / "result.tsv")
-
-
-if __name__ == "__main__":
-    # TODO update paper's code to actually use argparse
-    # Check if the correct number of arguments is passed
-    if len(sys.argv) != 4:
-        print("Invalid arguments! Please provide the paths to meta.tsv and otu.tsv.")
-        print("Usage: python gai_cal.py meta.tsv otu.tsv output_dir")
-    else:
-        # Get the file paths from command line arguments
-        meta_path = sys.argv[1]
-        otu_path = sys.argv[2]
-        output_dir = sys.argv[3]
-
-        # Call the main function with the file paths
-        main(meta_path, otu_path, output_dir)
