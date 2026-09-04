@@ -48,19 +48,22 @@ def model_health_ages(
     otu_df: pd.DataFrame,
     output_dir: Path,
 ) -> pd.DataFrame:
+
     # Use pycaret to model healthy otu_df and predict the physiological age of the samples
     pyc.setup(
         data=predicted_age_df,
         target="age",
         session_id=123,
-        use_gpu=True,
     )
+
+    print("X Train Shape: ", pyc.get_config("X_train").shape)
+    print("X Test Shape: ", pyc.get_config("X_test").shape)
 
     # Compare regression models and return the best model.
     best_model = pyc.compare_models(
-        # exclude=["lightgbm"],
-        # sort="MAE",
-        # errors="raise",
+        exclude=["lightgbm"],
+        sort="MAE",
+        errors="raise",
     )
 
     # pull() returns the comparison leaderboard as a DataFrame.
@@ -74,8 +77,8 @@ def model_health_ages(
     # Tune the best model.
     tuned_model = pyc.tune_model(
         best_model,
-        # optimize="MAE",
-        # n_iter=50,
+        optimize="MAE",
+        n_iter=50,
     )
 
     # pull() now returns the tuning results.
