@@ -1,14 +1,33 @@
 import datetime
 import sys
 from pathlib import Path
+from typing import Final
 
 import pandas as pd
-from catboost import CatBoostRegressor
-from pycaret import save_model
 from pycaret.tasks import RegressionExperiment
 
+PathLike = str | Path
 
-def split_otu_by_health(meta_path, otu_path):
+AGE_RANGES: Final[tuple[tuple[int, int], ...]] = (
+    (18, 20),
+    (20, 25),
+    (25, 30),
+    (30, 35),
+    (35, 40),
+    (40, 45),
+    (45, 50),
+    (50, 55),
+    (55, 60),
+    (60, 65),
+    (65, 70),
+    (70, 75),
+    (75, 100),
+)
+
+
+def split_otu_by_health(
+    meta_path: PathLike, otu_path: PathLike
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     # Read meta.tsv and otu.tsv
     meta_df = pd.read_csv(meta_path, sep="\t")
     meta_df = meta_df.set_index("id")
@@ -18,107 +37,82 @@ def split_otu_by_health(meta_path, otu_path):
 
     # Split otu_df based on the 'health' column in meta_df
     healthy_otu_df = otu_df[meta_df["health"] == "y"]
-    nonhealthy_otu_df = otu_df[meta_df["health"] != "n"]
+    # nonhealthy_otu_df = otu_df[meta_df["health"] == "n"]
+
     predicted_age_df = pd.merge(
         healthy_otu_df, meta_df["age"], left_index=True, right_index=True, how="inner"
     )
 
-    return healthy_otu_df, nonhealthy_otu_df, predicted_age_df, meta_df, otu_df
+    return predicted_age_df, meta_df, otu_df
 
 
-class CatBoostRegressorClonable(CatBoostRegressor):
-    def __sklearn_clone__(self):
-        return CatBoostRegressorClonable(**self.get_params())
-
-
-def model_health_ages(predicted_age_df, otu_df, output_dir):
-    # Use PyCaret 4 to model healthy otu_df and predict physiological age
-    reg = RegressionExperiment(target="age", session_id=123)
+def model_health_ages(
+    predicted_age_df: pd.DataFrame, otu_df: pd.DataFrame, output_dir: Path
+) -> pd.DataFrame:
+    reg = RegressionExperiment(
+        target="age",
+        session_id=123,
+    )
     reg.fit(predicted_age_df)
 
+    # Keep exclude=["lightgbm"] to preserve the original behavior.
     compare_result = reg.compare_models(exclude=["lightgbm"])
-    best_model = compare_result.best
-
-    compare_models_df = compare_result.leaderboard
-    compare_models_df.to_csv("compare_models.tsv", sep="\t", index=True)
-
-    # PyCaret 4 returns a sklearn Pipeline instead of the bare estimator.
-    # If CatBoost won, replace its final estimator with the GPU-enabled version.
-    if isinstance(best_model.steps[-1][1], CatBoostRegressor):
-        catboost_params = best_model.steps[-1][1].get_params()
-        catboost_params.update({"task_type": "GPU", "devices": "0"})
-
-        estimator_step = best_model.steps[-1][0]
-        best_model.set_params(
-            **{estimator_step: CatBoostRegressorClonable(**catboost_params)}
-        )
-
-    tune_result = reg.tune_model(best_model)
-    tuned_best_model = tune_result.pipeline
-
-    tuned_best_model_df = tune_result.cv_results
-    tuned_best_model_df.to_csv(
-        output_dir / "tuned_best_model.tsv", sep="\t", index=True
+    compare_result.leaderboard.to_csv(
+        "compare_models.tsv",
+        sep="\t",
+        index=True,
     )
 
-    final_best_model = reg.finalize_model(tuned_best_model)
+    tune_result = reg.tune_model(compare_result.best)
+    tune_result.metrics.to_csv(
+        output_dir / "tuned_best_model.tsv",
+        sep="\t",
+        index=True,
+    )
 
-    prediction_result = reg.predict_model(final_best_model, data=otu_df)
+    final_result = reg.finalize_model(tune_result.pipeline)
+    final_model = final_result.pipeline
+
+    prediction_result = reg.predict_model(final_model, data=otu_df)
     age_predictions = prediction_result.predictions
 
-    current_date = datetime.datetime.now().strftime("%Y%m%d")
-    save_model(final_best_model, output_dir / f"final_best_model_{current_date}")
+    current_date = datetime.datetime.now(datetime.UTC).strftime("%Y%m%d")
+    reg.save_model(
+        final_model,
+        output_dir / f"final_best_model_{current_date}",
+    )
 
     return age_predictions
 
 
-def calculate_raw_gai(meta_df, age_predictions):
-    # Calculate raw GAI by subtracting predicted age from true age and add it as a column in meta_df
+def calculate_raw_gai(
+    meta_df: pd.DataFrame, age_predictions: pd.DataFrame
+) -> pd.DataFrame:
+    """Add predicted age minus chronological age as the raw GAI."""
     meta_df["raw GAI"] = age_predictions["prediction_label"] - meta_df["age"]
-
     return meta_df
 
 
-def calculate_adjust_value(meta_df, output_dir):
-    # Extract raw GAI for healthy individuals
-    health_raw_gai = meta_df[meta_df["health"] == "y"]["raw GAI"]
+def calculate_adjust_value(meta_df: pd.DataFrame, output_dir: Path) -> pd.DataFrame:
+    """Calculate and assign the healthy-cohort adjustment for each age range."""
+    healthy_raw_gai = meta_df.loc[meta_df["health"] == "y", "raw GAI"]
 
-    # Calculate average raw GAI for different age ranges
-    age_ranges = [
-        (18, 20),
-        (20, 25),
-        (25, 30),
-        (30, 35),
-        (35, 40),
-        (40, 45),
-        (45, 50),
-        (50, 55),
-        (55, 60),
-        (60, 65),
-        (65, 70),
-        (70, 75),
-        (75, 100),
-    ]  # FIXME: missing age bracket!
-    adjust_values = []
-    for age_range in age_ranges:
-        start_age, end_age = age_range
-        avg_raw_gai = health_raw_gai[
-            (meta_df["age"] >= start_age) & (meta_df["age"] < end_age)
-        ].mean()
-        adjust_values.append(avg_raw_gai)
+    adjust_values: list[float] = []
+    for start_age, end_age in AGE_RANGES:
+        in_age_range = (meta_df["age"] >= start_age) & (meta_df["age"] < end_age)
+        adjust_values.append(healthy_raw_gai[in_age_range].mean())
 
-    # Save adjust_values
-    adjust_values_df = pd.DataFrame(
-        {"age_range": age_ranges, "adjust_value": adjust_values}
+    pd.DataFrame({"age_range": AGE_RANGES, "adjust_value": adjust_values}).to_csv(
+        output_dir / "adjust_values.tsv", sep="\t", index=False
     )
-    adjust_values_df.to_csv(output_dir / "adjust_values.tsv", sep="\t", index=False)
 
-    # Assign adjust values to samples in meta_df based on their age range
-    for i, age_range in enumerate(age_ranges):
-        start_age, end_age = age_range
-        meta_df.loc[
-            (meta_df["age"] >= start_age) & (meta_df["age"] < end_age), "adjust value"
-        ] = adjust_values[i]
+    for (start_age, end_age), adjust_value in zip(
+        AGE_RANGES,
+        adjust_values,
+        strict=True,
+    ):
+        in_age_range = (meta_df["age"] >= start_age) & (meta_df["age"] < end_age)
+        meta_df.loc[in_age_range, "adjust value"] = adjust_value
 
     return meta_df
 
@@ -130,21 +124,18 @@ def calculate_corrected_gai(meta_df):
     return meta_df
 
 
-def save_result(meta_df, result_path):
-    # Save result_df as result.tsv
-    # result_df = meta_df[["age", "raw GAI", "adjust value", "corrected GAI"]]
+def save_result(meta_df: pd.DataFrame, result_path: PathLike) -> None:
+    """Save the completed results table as a TSV file."""
     meta_df.to_csv(result_path, sep="\t", index=True)
     print(f"Saved result as {result_path}")
 
 
-def main(meta_path, otu_path, output_dir):
+def main(meta_path: PathLike, otu_path: PathLike, output_dir: PathLike):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Split otu.tsv into healthy and nonhealthy otu dataframes
-    healthy_otu_df, nonhealthy_otu_df, predicted_age_df, meta_df, otu_df = (
-        split_otu_by_health(meta_path, otu_path)
-    )
+    # Split otu.tsv into healthy and get predicted age dataframe
+    predicted_age_df, meta_df, otu_df = split_otu_by_health(meta_path, otu_path)
 
     # Model healthy otu dataframe and predict ages
     age_predictions = model_health_ages(predicted_age_df, otu_df, output_dir)
