@@ -20,7 +20,7 @@ def main() -> None:
         print("Usage: uv run gai-cal ggmp | uv run gai-cal agp")
         return
 
-    type DATASET = Literal["AGP", "GGMP"]
+    DATASET = Literal["AGP", "GGMP"]
     dataset: DATASET = "AGP" if sys.argv[1].lower() == "agp" else "GGMP"
 
     meta_path = PROJECT_ROOT / "datasets/processed" / dataset / "meta.tsv"

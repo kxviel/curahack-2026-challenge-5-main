@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Final
 
 import pandas as pd
-from pycaret.tasks import RegressionExperiment
+import pycaret.regression as pyc
 
 AGE_RANGES: Final[tuple[tuple[int, int], ...]] = (
     (18, 20),
@@ -44,50 +44,66 @@ def split_otu_by_health(
 
 
 def model_health_ages(
-    predicted_age_df: pd.DataFrame, otu_df: pd.DataFrame, output_dir: Path
+    predicted_age_df: pd.DataFrame,
+    otu_df: pd.DataFrame,
+    output_dir: Path,
 ) -> pd.DataFrame:
-    reg = RegressionExperiment(
+    # Use pycaret to model healthy otu_df and predict the physiological age of the samples
+    pyc.setup(
+        data=predicted_age_df,
         target="age",
         session_id=123,
+        use_gpu=True,
     )
-    reg.fit(predicted_age_df)
 
-    # Keep exclude=["lightgbm"] to preserve the original behavior.
-    compare_result = reg.compare_models(
+    # Compare regression models and return the best model.
+    best_model = pyc.compare_models(
         # exclude=["lightgbm"],
         # sort="MAE",
         # errors="raise",
     )
-    compare_result.leaderboard.to_csv(
-        "compare_models.tsv",
+
+    # pull() returns the comparison leaderboard as a DataFrame.
+    compare_result = pyc.pull()
+    compare_result.to_csv(
+        output_dir / "compare_models.tsv",
         sep="\t",
         index=True,
     )
 
-    tune_result = reg.tune_model(
-        compare_result.best,
+    # Tune the best model.
+    tuned_model = pyc.tune_model(
+        best_model,
         # optimize="MAE",
         # n_iter=50,
     )
-    tune_result.metrics.to_csv(
+
+    # pull() now returns the tuning results.
+    tune_result = pyc.pull()
+    tune_result.to_csv(
         output_dir / "tuned_best_model.tsv",
         sep="\t",
         index=True,
     )
 
-    final_result = reg.finalize_model(tune_result.pipeline)
-    final_model = final_result.pipeline
+    # Refit tuned model on the complete training dataset.
+    final_best_model = pyc.finalize_model(tuned_model)
 
-    prediction_result = reg.predict_model(final_model, data=otu_df)
-    age_predictions = prediction_result.predictions
+    # Predict physiological age.
+    prediction_result = pyc.predict_model(
+        final_best_model,
+        data=otu_df,
+    )
+    age_predictions = prediction_result["prediction_label"]
 
+    # Save final model.
     current_date = datetime.datetime.now(datetime.UTC).strftime("%Y%m%d")
-    reg.save_model(
-        final_model,
-        output_dir / f"final_best_model_{current_date}",
+    pyc.save_model(
+        final_best_model,
+        str(output_dir / f"final_best_model_{current_date}"),
     )
 
-    return age_predictions
+    return age_predictions.to_frame()
 
 
 def calculate_raw_gai(
